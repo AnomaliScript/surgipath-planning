@@ -1,6 +1,7 @@
 # list_series_sitk.py
 from pathlib import Path
 import SimpleITK as sitk
+import pydicom
 
 def list_series(dicom_dir: str):
     dicom_dir = Path(dicom_dir)
@@ -36,14 +37,14 @@ def sorted_files_sitk(dicom_dir: str):
     files = r.GetGDCMSeriesFileNames(dicom_dir, sid)  # <- sorted
     return sid, files
 
-def convert_hounsfield_unit():
-    converted = []
-    # HU represents tissue density or radiodensity
-    for i in sorted_files_sitk(dicom_dir):
-        i.convert(hu)
-        i.invert(MONOCHROME1)
-        converted.append(i)
-    return converted
+def convert_hounsfield_unit(dicom_dir: str):
+    i, files = sorted_files_sitk(dicom_dir)
+    for f in files:
+        dataset = pydicom.dcmread("your_dicom_file.dcm")
+        raw_pixel_data = dataset.pixel_array
+        # HU represents tissue density or radiodensity
+        hounsfield_units = pydicom.pixel_data_handlers.util.apply_modality_lut(raw_pixel_data, dataset)
+    return hounsfield_units
 
 if __name__ == "__main__":
     # change to your folder path
