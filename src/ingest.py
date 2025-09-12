@@ -6,7 +6,26 @@ import argparse, json, re, hashlib
 import json
 import matplotlib.pyplot as plt
 
-def index_dataset_by_study(dataset_dir: str):
+def retrieve_dataset(dataset_dir: str):
+    datasets = []
+    data = Path(dataset_dir)
+
+    count = 0
+    for folder in data.iterdir():
+        if folder.is_dir():
+            datasets.append(folder)
+            print(f"Dataset #{count}: {folder.name}")
+            count += 1
+    choice = input("Which dataset would you like to process? (enter number) ")
+
+    try:
+        idx = int(choice)
+        return datasets[idx]
+    except (ValueError, IndexError):
+        print("Invalid choice.")
+        return None
+
+def dicom_directory(dataset_dir: str):
     """
     Returns { study_uid: { series_uid: { "desc": str, "modality": str, "files": [paths...] } } }
     Recurses through the dataset folder; you do NOT need to know its internal tree.
@@ -92,15 +111,21 @@ def window_to_unit(arr_hu: np.ndarray, center=50.0, width=350.0, invert_for_disp
 
 # Main Function: Get data, push it out
 def main():
-    # Gets dataset (data/[dataset_name]) via a command line argument
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", required=True, help="Path to one dataset folder under data/ (e.g., data/RSNA2022)")
-    args = ap.parse_args()
+    # # Gets dataset (data/[dataset_name]) via a command line argument
+    # ap = argparse.ArgumentParser()
+    # ap.add_argument("--dataset", required=True, help="Path to one dataset folder under data/ (e.g., data/RSNA2022)")
+    # args = ap.parse_args()
 
-    dataset_dir = Path(args.dataset)
+    dataset_dir = retrieve_dataset("E:\Spine-Mets-CT-data") # Dataset folder is on a freaking usb .-.
+    if dataset_dir is None:
+        print("No dataset selected.")
+        return
+    else:
+        print("Chosen dataset:", dataset_dir)
+
     dataset_name = dataset_dir.name
 
-    idx = index_dataset_by_study(dataset_dir)
+    idx = dicom_directory(dataset_dir)
     if not idx:
         raise SystemExit(f"No studies found under {dataset_dir}")
 
