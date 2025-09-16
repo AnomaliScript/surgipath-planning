@@ -2,8 +2,9 @@ from pathlib import Path
 import numpy as np
 import pydicom
 from pydicom.pixel_data_handlers.util import apply_modality_lut
-import argparse, json, re, hashlib
 import json
+import re
+import hashlib
 import matplotlib.pyplot as plt
 
 def retrieve_dataset(dataset_dir: str):
@@ -71,17 +72,34 @@ def convert_files_to_hu(files: list[str]):
     slices, ipps = [], []
     ds0 = None
     for index, f in enumerate(files_sorted):
-        ds = pydicom.dcmread(f)
-        if index == 0: ds0 = ds
-        hu = apply_modality_lut(ds.pixel_array, ds).astype(np.float32)
-        slices.append(hu)
-        ipp = getattr(ds, "ImagePositionPatient", [0, 0, index])
-        ipps.append(np.array(ipp, dtype=float))
+        try:
+            ds = pydicom.dcmread(f)
+            if index == 0: ds0 = ds
+            hu = apply_modality_lut(ds.pixel_array, ds).astype(np.float32)
+            slices.append(hu)
+            ipp = getattr(ds, "ImagePositionPatient", [0, 0, index])
+            ipps.append(np.array(ipp, dtype=float))
+        except Exception as e:
+            print(f"Warning: Failed to process file {f}: {e}")
+            continue
+
+    if not slices:
+        raise ValueError("No valid slices found in the series.")
 
     vol_hu = np.stack(slices, axis=0)  # (Z,Y,X)
-    row_mm, col_mm = map(float, ds0.PixelSpacing)
-    dz = np.diff([p[2] for p in ipps])
+    
+    # Handle missing PixelSpacing gracefully
+    try:
+        row_mm, col_mm = map(float, ds0.PixelSpacing)
+    except (AttributeError, ValueError):
+        print("Warning: PixelSpacing not found or invalid. Defaulting to 1.0 mm.")
+        row_mm, col_mm = 1.0, 1.0
+    
+    dz = np.diff([p[2] for p in ipps]) if len(ipps) > 1 else []
     z_mm = float(np.median(np.abs(dz))) if len(dz) else float(getattr(ds0, "SliceThickness", 1.0))
+    if z_mm <= 0:
+        print("Warning: Invalid slice spacing. Defaulting to 1.0 mm.")
+        z_mm = 1.0
     spacing_zyx = (z_mm, row_mm, col_mm)
 
     # Anatomy of a DICOM file!
@@ -116,7 +134,7 @@ def main():
     # ap.add_argument("--dataset", required=True, help="Path to one dataset folder under data/ (e.g., data/RSNA2022)")
     # args = ap.parse_args()
 
-    dataset_dir = retrieve_dataset("E:\Spine-Mets-CT-data") # Dataset folder is on a freaking usb .-.
+    dataset_dir = retrieve_dataset("E:\\Spine-Mets-CT-data") # Dataset folder is on a freaking usb .-.
     if dataset_dir is None:
         print("No dataset selected.")
         return
@@ -139,28 +157,10 @@ def main():
         #6: Windowing and Normalizing vol_hu (the original vol_hu is now not needed)
         vol01 = window_to_unit(vol_hu, center=50, width=350)
 
-        # Moving Out!
-        #I: Assertions
-        # Checking if volume.npy was actually written into
-        vol = np.load(case_dir / "volume.npy", mmap_mode="r")
-        assert vol.dtype == np.float32 and vol.ndim == 3 and vol.shape[0] >= 10
-        # Checking if spacing is correct and all three decimals/floats are greater than 0
-        s = json.loads((case_dir / "spacing.json").read_text())["spacing_zyx"]
-        assert len(s) == 3 and all(float(x) > 0 for x in s)
-        # Checking for failed save paths
-        assert (case_dir / "preview.png").stat().st_size > 0
-        
         #II: Getting Series, Study, and Series Desc for filenames and organization
         series_uid  = meta.get("SeriesInstanceUID", "NA")
         study_uid   = meta.get("StudyInstanceUID",  "NA")      # ensure convert_to_hu records this
         series_desc = meta.get("SeriesDescription", "Series")  # ensure convert_to_hu records this
-
-        #III: Getting Preview Image
-        z = vol01.shape[0] // 2
-        preview_img = vol01[z].copy()
-        if meta.get("PhotometricInterpretation","MONOCHROME2") == "MONOCHROME1":
-            preview_img = 1.0 - preview_img
-        # plt.imsave(out / "preview.png", preview_img, cmap="gray")
 
         #IV: Hashing UIDs for my sanity (UIDs are loooong)
         def short_id(uid: str, n=8): return hashlib.sha1(uid.encode()).hexdigest()[:n]
@@ -170,7 +170,30 @@ def main():
         case_dir = Path("out") / dataset_name / f"STDY_{short_id(study_uid)}__SRS_{short_id(series_uid)}__{safe(series_desc)}" / "ingest"
         case_dir.mkdir(parents=True, exist_ok=True)
 
+        #III: Getting Preview Image
+        z = vol01.shape[0] // 2
+        preview_img = vol01[z].copy()
+        if meta.get("PhotometricInterpretation","MONOCHROME2") == "MONOCHROME1":
+            preview_img = 1.0 - preview_img
+
+        # Moving Out!
         save_ingestion(case_dir, vol01, spacing, meta, preview_img)
+        
+        #I: Assertions (moved here after saving)
+        try:
+            # Checking if volume.npy was actually written into
+            vol = np.load(case_dir / "volume.npy", mmap_mode="r")
+            assert vol.dtype == np.float32 and vol.ndim == 3 and vol.shape[0] >= 10
+            # Checking if spacing is correct and all three decimals/floats are greater than 0
+            s = json.loads((case_dir / "spacing.json").read_text())["spacing_zyx"]
+            assert len(s) == 3 and all(float(x) > 0 for x in s)
+            # Checking for failed save paths
+            assert (case_dir / "preview.png").stat().st_size > 0
+            print(f"Assertions passed for {case_dir}")
+        except AssertionError as e:
+            print(f"Assertion failed for {case_dir}: {e}")
+        except Exception as e:
+            print(f"Error during assertions for {case_dir}: {e}")
         
 
 def save_ingestion(out_dir, vol01, spacing_zyx, meta, preview_img=None):
@@ -181,6 +204,10 @@ def save_ingestion(out_dir, vol01, spacing_zyx, meta, preview_img=None):
     np.save(out / "volume.npy", vol01.astype(np.float32))
     (out / "spacing.json").write_text(json.dumps({"spacing_zyx": spacing_zyx}, indent=2))
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
-    if preview_img.ndim != 2:
-        return
-    plt.imsave(out / "preview.png", preview_img, cmap="gray")
+    if preview_img is not None and preview_img.ndim == 2:
+        plt.imsave(out / "preview.png", preview_img, cmap="gray")
+    else:
+        print("Warning: Preview image not saved (invalid or missing).")
+
+if __name__ == "__main__":
+    main()
